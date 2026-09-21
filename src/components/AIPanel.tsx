@@ -3,6 +3,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { streamChat, buildAskMessages, buildAgentMessages, parseEdits, type ChatMessage } from "../utils/aiChat";
 import type { AIConfig } from "../utils/aiAssist";
+import { getWikiContext, getWikiStats } from "../utils/wikiQuery";
 import mascotWizard from "../assets/mascot/mascot-wizard.png";
 
 interface AIPanelProps {
@@ -30,9 +31,10 @@ const MAX_HISTORY_TURNS = 8;
 export function AIPanel({ isOpen, onClose, note, fileName, selectionText, aiConfig, onProposeEdit }: AIPanelProps) {
     const [messages, setMessages] = useState<UIMessage[]>([]);
     const [input, setInput] = useState("");
-    const [mode, setMode] = useState<"ask" | "agent">("ask");
+    const [mode, setMode] = useState<"ask" | "agent" | "wiki">("ask");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [wikiStats, setWikiStatsState] = useState<{ totalChunks: number; totalFiles: number } | null>(null);
     const abortRef = useRef<AbortController | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -45,6 +47,12 @@ export function AIPanel({ isOpen, onClose, note, fileName, selectionText, aiConf
         if (el) el.scrollTop = el.scrollHeight;
     }, [messages]);
     useEffect(() => () => abortRef.current?.abort(), []);
+    
+    useEffect(() => {
+        if (isOpen && mode === "wiki") {
+            getWikiStats().then(stats => setWikiStatsState(stats)).catch(() => {});
+        }
+    }, [isOpen, mode]);
 
     // Auto-grow the composer as the user types more lines (up to a max, then
     // scroll). Without this the single-row textarea just scrolls internally and
@@ -79,9 +87,16 @@ export function AIPanel({ isOpen, onClose, note, fileName, selectionText, aiConf
         const ctrl = new AbortController();
         abortRef.current = ctrl;
         try {
+            let wikiContext = "";
+            if (mode === "wiki") {
+                wikiContext = await getWikiContext(text);
+            }
+            
             const msgs = mode === "agent"
                 ? buildAgentMessages(history, note, selectionText, text)
-                : buildAskMessages(history, note, selectionText, text);
+                : mode === "wiki"
+                    ? [{ role: "system" as const, content: wikiContext || "No wiki content available. Configure a wiki folder in Settings → Wiki." }, ...history.map(m => ({ role: m.role as "user" | "assistant", content: m.content }))]
+                    : buildAskMessages(history, note, selectionText, text);
             const full = await streamChat(msgs, aiConfig, {
                 signal: ctrl.signal,
                 onToken: (delta) => {
@@ -167,16 +182,21 @@ export function AIPanel({ isOpen, onClose, note, fileName, selectionText, aiConf
                     <span className="px-1.5 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--accent)] text-[11px] shrink-0">selection</span>
                 )}
                 <div className="ml-auto flex items-center gap-0.5 bg-[var(--bg-input)] rounded-[var(--radius-sm)] p-0.5 border border-[var(--border-subtle)] shrink-0">
-                    {(["ask", "agent"] as const).map((md) => (
+                    {(["ask", "wiki", "agent"] as const).map((md) => (
                         <button
                             key={md}
                             onClick={() => setMode(md)}
-                            title={md === "ask" ? "Ask questions (read-only)" : "Make edits (review before applying)"}
+                            title={md === "ask" ? "Ask questions (read-only)" : md === "wiki" ? "Search wiki knowledge base" : "Make edits (review before applying)"}
                             className={`px-2 py-0.5 text-[11px] rounded-[var(--radius-sm)] capitalize transition-colors ${mode === md ? "bg-[var(--accent)] text-[var(--accent-text)]" : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"}`}
                         >
                             {md}
                         </button>
                     ))}
+                    {wikiStats && mode === "wiki" && (
+                        <span className="px-1.5 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--text-muted)] text-[10px] shrink-0" title={`${wikiStats.totalFiles} files, ${wikiStats.totalChunks} chunks`}>
+                            {wikiStats.totalChunks} chunks
+                        </span>
+                    )}
                 </div>
             </div>
 
@@ -203,12 +223,14 @@ export function AIPanel({ isOpen, onClose, note, fileName, selectionText, aiConf
                             className="w-24 h-24 object-contain select-none mb-1"
                         />
                         <p className="text-sm font-medium text-[var(--text-primary)]">
-                            {mode === "agent" ? "What should I change?" : "Ask about this note"}
+                            {mode === "agent" ? "What should I change?" : mode === "wiki" ? "Search wiki knowledge" : "Ask about this note"}
                         </p>
                         <p className="text-xs text-[var(--text-muted)] leading-relaxed">
                             {mode === "agent"
                                 ? "I'll propose edits you can review and accept."
-                                : "Summaries, questions, suggestions — anything."}
+                                : mode === "wiki"
+                                    ? "Search your wiki knowledge base for answers."
+                                    : "Summaries, questions, suggestions — anything."}
                         </p>
                     </div>
                 ) : (

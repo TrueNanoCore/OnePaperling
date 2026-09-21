@@ -718,6 +718,151 @@ pub fn set_ai_key(key: String) -> Result<(), String> {
     }
 }
 
+/// Wiki file entry for directory listing (includes content)
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WikiFileEntry {
+    pub path: String,
+    pub name: String,
+    pub content: String,
+    pub size: u64,
+    pub modified: u64,
+}
+
+/// Wiki stats
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WikiStats {
+    pub total_files: u64,
+    pub total_size: u64,
+}
+
+/// List all markdown files in a directory with metadata (for wiki ingestion)
+#[tauri::command]
+pub async fn list_wiki_files(directory: String) -> Result<Vec<WikiFileEntry>, CommandError> {
+    let dir_path = PathBuf::from(&directory);
+
+    if !dir_path.exists() {
+        return Err(CommandError::FileNotFound(directory));
+    }
+
+    if !dir_path.is_dir() {
+        return Err(CommandError::ReadError(
+            "Path is not a directory".to_string(),
+        ));
+    }
+
+    let mut entries = Vec::new();
+
+    let mut read_dir = tokio::fs::read_dir(&dir_path)
+        .await
+        .map_err(|e| CommandError::ReadError(e.to_string()))?;
+
+    while let Some(entry) = read_dir
+        .next_entry()
+        .await
+        .map_err(|e| CommandError::ReadError(e.to_string()))?
+    {
+        let path = entry.path();
+
+        let entry_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+
+        if entry_name.starts_with('.') {
+            continue;
+        }
+
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext == "md" || ext == "markdown" {
+                    let metadata = match tokio::fs::metadata(&path).await {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+
+                    if metadata.len() > MAX_TEXT_FILE_BYTES {
+                        continue;
+                    }
+
+                    let content = match tokio::fs::read_to_string(&path).await {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+
+                    entries.push(WikiFileEntry {
+                        path: path.to_string_lossy().to_string(),
+                        name: entry_name,
+                        content,
+                        size: metadata.len(),
+                        modified: mtime_ms(&metadata),
+                    });
+                }
+            }
+        }
+    }
+
+    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    Ok(entries)
+}
+
+/// Get wiki statistics (file count, total size)
+#[tauri::command]
+pub async fn get_wiki_stats(directory: String) -> Result<WikiStats, CommandError> {
+    let dir_path = PathBuf::from(&directory);
+
+    if !dir_path.exists() {
+        return Err(CommandError::FileNotFound(directory));
+    }
+
+    let mut total_files: u64 = 0;
+    let mut total_size: u64 = 0;
+
+    let mut stack = vec![dir_path];
+
+    while let Some(dir) = stack.pop() {
+        let read_dir = match std::fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            if file_type.is_dir() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with('.') || name == "node_modules" || name == "target" {
+                        continue;
+                    }
+                }
+                stack.push(path);
+                continue;
+            }
+
+            if file_type.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext == "md" || ext == "markdown" {
+                        total_files += 1;
+                        if let Ok(metadata) = entry.metadata() {
+                            total_size += metadata.len();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(WikiStats {
+        total_files,
+        total_size,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

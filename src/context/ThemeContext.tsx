@@ -1,13 +1,21 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { ensureFontLoaded } from '../fonts';
 
-export type Theme = 'dark' | 'light' | 'paper' | 'dracula';
+export type Theme = 'dark' | 'light' | 'paper' | 'dracula' | 'custom';
 export type FontFamily = 'inter' | 'merriweather' | 'lora' | 'source-serif' | 'fira-sans';
 export type FontSize = 'small' | 'medium' | 'large';
+
+export interface CustomTheme {
+    name: string;
+    id: string;
+    colors: Record<string, string>;
+}
 
 interface ThemeContextType {
     theme: Theme;
     setTheme: (theme: Theme) => void;
+    customThemeName: string | null;
+    setCustomThemeName: (name: string | null) => void;
     font: FontFamily;
     setFont: (font: FontFamily) => void;
     fontSize: FontSize;
@@ -17,11 +25,13 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 const THEME_STORAGE_KEY = 'paperling-theme';
+const CUSTOM_THEME_STORAGE_KEY = 'paperling-custom-theme-active';
+const CUSTOM_THEMES_STORAGE_KEY = 'paperling-custom-themes';
 const FONT_STORAGE_KEY = 'paperling-font';
 const FONT_SIZE_STORAGE_KEY = 'paperling-font-size';
 
 // Valid values for validation against corrupted localStorage
-const VALID_THEMES: Theme[] = ['dark', 'light', 'paper', 'dracula'];
+const VALID_THEMES: Theme[] = ['dark', 'light', 'paper', 'dracula', 'custom'];
 const VALID_FONTS: FontFamily[] = ['inter', 'merriweather', 'lora', 'source-serif', 'fira-sans'];
 const VALID_FONT_SIZES: FontSize[] = ['small', 'medium', 'large'];
 
@@ -31,6 +41,43 @@ function getValidated<T extends string>(key: string, validValues: T[], fallback:
         return stored as T;
     }
     return fallback;
+}
+
+export function getCustomThemes(): CustomTheme[] {
+    try {
+        const raw = localStorage.getItem(CUSTOM_THEMES_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((t: unknown): t is CustomTheme => typeof t === 'object' && t !== null && typeof (t as Record<string, unknown>).name === 'string' && typeof (t as Record<string, unknown>).id === 'string' && typeof (t as Record<string, unknown>).colors === 'object' && (t as Record<string, unknown>).colors !== null);
+    } catch {
+        return [];
+    }
+}
+
+export function saveCustomThemes(themes: CustomTheme[]): void {
+    try {
+        localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(themes));
+    } catch {/* storage may be full / disabled */}
+}
+
+export function getActiveCustomThemeId(): string | null {
+    return localStorage.getItem(CUSTOM_THEME_STORAGE_KEY);
+}
+
+export function setActiveCustomThemeId(id: string | null): void {
+    try {
+        if (id === null) {
+            localStorage.removeItem(CUSTOM_THEME_STORAGE_KEY);
+        } else {
+            localStorage.setItem(CUSTOM_THEME_STORAGE_KEY, id);
+        }
+    } catch {/* storage may be full / disabled */}
+}
+
+export function getCustomThemeById(id: string): CustomTheme | null {
+    const themes = getCustomThemes();
+    return themes.find(t => t.id === id) || null;
 }
 
 /** True when the OS reports a light color scheme. Guarded for non-browser
@@ -54,6 +101,10 @@ function getInitialTheme(): Theme {
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
     const [theme, setThemeState] = useState<Theme>(getInitialTheme);
+    const [customThemeName, setCustomThemeNameState] = useState<string | null>(() => {
+        if (theme !== 'custom') return null;
+        return getActiveCustomThemeId();
+    });
 
     const [font, setFontState] = useState<FontFamily>(() =>
         getValidated(FONT_STORAGE_KEY, VALID_FONTS, 'inter')
@@ -66,6 +117,18 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const setTheme = (newTheme: Theme) => {
         setThemeState(newTheme);
         localStorage.setItem(THEME_STORAGE_KEY, newTheme);
+        if (newTheme !== 'custom') {
+            setCustomThemeNameState(null);
+        }
+    };
+
+    const setCustomThemeName = (name: string | null) => {
+        setCustomThemeNameState(name);
+        setActiveCustomThemeId(name);
+        if (name) {
+            setThemeState('custom');
+            localStorage.setItem(THEME_STORAGE_KEY, 'custom');
+        }
     };
 
     const setFont = (newFont: FontFamily) => {
@@ -87,7 +150,25 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         el.setAttribute('data-theme', theme);
         el.setAttribute('data-font', font);
         el.setAttribute('data-font-size', fontSize);
-    }, [theme, font, fontSize]);
+
+        // Clear any previously injected custom theme variables
+        const styleEl = el.querySelector('#paperling-custom-theme-styles');
+        if (styleEl) styleEl.remove();
+
+        // Inject custom theme CSS variables if active
+        if (theme === 'custom' && customThemeName) {
+            const customTheme = getCustomThemeById(customThemeName);
+            if (customTheme && customTheme.colors) {
+                const style = document.createElement('style');
+                style.id = 'paperling-custom-theme-styles';
+                const vars = Object.entries(customTheme.colors)
+                    .map(([key, value]) => `  --${key}: ${value};`)
+                    .join('\n');
+                style.textContent = `:root {${vars}\n}`;
+                document.head.appendChild(style);
+            }
+        }
+    }, [theme, font, fontSize, customThemeName]);
 
     // Track the OS theme until the user picks one explicitly. The handler
     // re-checks storage each time so flipping the OS appearance never overrides
@@ -105,7 +186,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }, []);
 
     return (
-        <ThemeContext.Provider value={{ theme, setTheme, font, setFont, fontSize, setFontSize }}>
+        <ThemeContext.Provider value={{ theme, setTheme, customThemeName, setCustomThemeName, font, setFont, fontSize, setFontSize }}>
             {children}
         </ThemeContext.Provider>
     );

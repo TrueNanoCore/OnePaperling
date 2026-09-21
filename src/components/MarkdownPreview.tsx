@@ -189,6 +189,7 @@ const loadMathPlugins = (): Promise<PluginPair> => {
         import("remark-math"),
         import("rehype-katex"),
         import("katex/dist/katex.min.css"),
+        // @ts-expect-error - mhchem.mjs has no types
         import("katex/dist/contrib/mhchem.mjs"),
     ]).then(([rm, rk]) => {
         mathPluginsCache = { remark: rm.default, rehype: rk.default };

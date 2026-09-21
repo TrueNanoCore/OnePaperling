@@ -73,6 +73,23 @@ const themeColors: Record<Theme, Record<string, string>> = {
         syntaxBold: '#f8f8f2',
         markBg: 'rgba(255, 184, 108, 0.35)',
     },
+    custom: {
+        bgPrimary: '#0a0a0a',
+        bgSecondary: '#141414',
+        textPrimary: '#ffffff',
+        textSecondary: '#737373',
+        border: '#262626',
+        codeBg: '#141414',
+        codeText: '#a3a3a3',
+        blockquoteBg: 'rgba(20, 20, 20, 0.8)',
+        accent: '#ffffff',
+        syntaxH1: '#ffffff',
+        syntaxH2: '#e5e5e5',
+        syntaxH3: '#d4d4d4',
+        syntaxLink: '#a3a3a3',
+        syntaxBold: '#ffffff',
+        markBg: 'rgba(255, 196, 0, 0.35)',
+    },
 };
 
 // Font family definitions

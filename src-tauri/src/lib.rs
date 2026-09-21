@@ -3,8 +3,8 @@ mod commands;
 mod pdf;
 
 use commands::{
-    get_ai_key, get_file_info, list_directory_files, read_file, read_image_file, save_file,
-    save_image, search_files, set_ai_key,
+    get_ai_key, get_file_info, get_wiki_stats, list_directory_files, list_wiki_files, read_file,
+    read_image_file, save_file, save_image, search_files, set_ai_key,
 };
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
@@ -115,6 +115,8 @@ pub fn run() {
             save_file,
             get_file_info,
             list_directory_files,
+            list_wiki_files,
+            get_wiki_stats,
             search_files,
             save_image,
             read_image_file,

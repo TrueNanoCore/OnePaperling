@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { useTheme, type Theme, type FontFamily, type FontSize } from "../context/ThemeContext";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { useTheme, type Theme, type FontFamily, type FontSize, type CustomTheme, getCustomThemes } from "../context/ThemeContext";
+import { importThemeFromFile, addCustomTheme, removeCustomTheme, exportTheme, type ThemeDefinition } from "../utils/themes";
 import {
     getTypewriterMode, setTypewriterMode,
     getToolbarEnabled, setToolbarEnabled,
@@ -10,6 +11,7 @@ import {
     getAutoSave, setAutoSave,
     getOpenInReader, setOpenInReader,
 } from "../utils/persistence";
+import { getWikiConfig, setWikiConfig, clearWikiConfig } from "../config/wikiConfig";
 import { AI_PROVIDERS, matchProvider, type AIProvider } from "../utils/aiProviders";
 import { attachFocusTrap } from "../utils/focusTrap";
 import { isValidEndpoint, runAIAction } from "../utils/aiAssist";
@@ -25,10 +27,12 @@ interface SettingsModalProps {
     onClose: () => void;
 }
 
-type Section = "appearance" | "editor" | "ai" | "about";
+type Section = "appearance" | "themes" | "wiki" | "editor" | "ai" | "about";
 
 const sections: Array<{ id: Section; label: string; icon: string }> = [
     { id: "appearance", label: "Appearance", icon: "palette" },
+    { id: "themes", label: "Themes", icon: "brush" },
+    { id: "wiki", label: "Wiki", icon: "school" },
     { id: "editor", label: "Editor", icon: "edit" },
     { id: "ai", label: "AI", icon: "auto_awesome" },
     { id: "about", label: "About", icon: "info" },
@@ -90,9 +94,19 @@ function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const dialogRef = useRef<HTMLDivElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
     const [section, setSection] = useState<Section>("appearance");
     const [filter, setFilter] = useState("");
-    const { theme, setTheme, font, setFont, fontSize, setFontSize } = useTheme();
+    const { theme, setTheme, customThemeName, setCustomThemeName, font, setFont, fontSize, setFontSize } = useTheme();
+    const [customThemes, setCustomThemesState] = useState<CustomTheme[]>([]);
+    const [importError, setImportError] = useState<string | null>(null);
+    const [showManageThemes, setShowManageThemes] = useState(false);
+
+    const [wikiConfig, setWikiConfigLocal] = useState(getWikiConfig);
+    const [wikiFolderPath, setWikiFolderPathLocal] = useState(wikiConfig.folderPath);
+    const [wikiModel, setWikiModelLocal] = useState(wikiConfig.model);
+    const [wikiSchedule, setWikiScheduleLocal] = useState(wikiConfig.schedule);
+    const [wikiError, setWikiError] = useState<string | null>(null);
 
     const [typewriter, setTypewriterLocal] = useState(getTypewriterMode);
     const [toolbar, setToolbarLocal] = useState(getToolbarEnabled);
@@ -114,6 +128,108 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
     // Connection-test state for the "Test connection" button (AI-04).
     const [aiTest, setAiTest] = useState<{ state: "idle" | "testing" | "ok" | "error"; msg?: string }>({ state: "idle" });
+
+    // Load custom themes and wiki config when modal opens
+    useEffect(() => {
+        if (isOpen) {
+            setCustomThemesState(getCustomThemes());
+            const wc = getWikiConfig();
+            setWikiConfigLocal(wc);
+            setWikiFolderPathLocal(wc.folderPath);
+            setWikiModelLocal(wc.model);
+            setWikiScheduleLocal(wc.schedule);
+        }
+    }, [isOpen]);
+
+    const handleImportTheme = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setImportError(null);
+        const result = await importThemeFromFile(file);
+        if (result.valid && result.theme) {
+            const themes = addCustomTheme(result.theme);
+            setCustomThemesState(themes);
+            setCustomThemeName(result.theme.id);
+        } else {
+            setImportError(result.error || 'Unknown error');
+        }
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    }, [setCustomThemeName]);
+
+    const handleExportTheme = useCallback(() => {
+        if (theme === 'custom' && customThemeName) {
+            const themeDef: ThemeDefinition = {
+                name: customThemeName,
+                id: customThemeName,
+                colors: {} as ThemeDefinition['colors'],
+            };
+            const styleEl = document.getElementById('paperling-custom-theme-styles');
+            if (styleEl) {
+                const cssText = styleEl.textContent || '';
+                const matches = cssText.match(/--([^:]+):\s*([^;]+)/g);
+                if (matches) {
+                    for (const match of matches) {
+                        const [prop, value] = match.split(':').map(s => s.trim());
+                        if (prop && value) {
+                            (themeDef.colors as Record<string, string>)[prop] = value;
+                        }
+                    }
+                }
+            }
+            if (Object.keys(themeDef.colors).length > 0) {
+                exportTheme(themeDef);
+            }
+        }
+    }, [theme, customThemeName]);
+
+    const handleDeleteTheme = useCallback((id: string) => {
+        removeCustomTheme(id);
+        setCustomThemesState(getCustomThemes());
+        if (customThemeName === id) {
+            setCustomThemeName(null);
+            setTheme('dark');
+        }
+    }, [customThemeName, setCustomThemeName, setTheme]);
+
+    const handleSelectTheme = useCallback((id: string) => {
+        setCustomThemeName(id);
+    }, [setCustomThemeName]);
+
+    const pickWikiFolder = useCallback(async () => {
+        try {
+            const result = await window.__TAURI__.dialog.open({
+                directory: true,
+                multiple: false,
+            });
+            if (result) {
+                const path = Array.isArray(result) ? result[0] : result;
+                setWikiFolderPathLocal(path);
+            }
+        } catch (e) {
+            setWikiError(`Failed to pick folder: ${e}`);
+        }
+    }, []);
+
+    const saveWikiConfig = useCallback(() => {
+        const success = setWikiConfig({
+            folderPath: wikiFolderPath,
+            model: wikiModel,
+            schedule: wikiSchedule,
+        });
+        if (success) {
+            setWikiConfigLocal(getWikiConfig());
+            setWikiError(null);
+        } else {
+            setWikiError('Invalid configuration');
+        }
+    }, [wikiFolderPath, wikiModel, wikiSchedule]);
+
+    const clearWiki = useCallback(() => {
+        clearWikiConfig();
+        setWikiConfigLocal(getWikiConfig());
+        setWikiFolderPathLocal('');
+        setWikiError(null);
+    }, []);
 
     // Update an AI field, clear any stale test result, and persist immediately
     // (when the endpoint is empty or valid) so edits survive a close-before-blur.
@@ -318,6 +434,230 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         </div>
                                     </section>
                                 )}
+                            </>
+                        )}
+
+                        {section === "themes" && (
+                            <>
+                                {!showManageThemes ? (
+                                    <>
+                                        <section>
+                                            <h3 className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-2">Built-in Themes</h3>
+                                            <div className="grid grid-cols-4 gap-2">
+                                                {themes.map((t) => (
+                                                    <button
+                                                        key={t.id}
+                                                        onClick={() => { setTheme(t.id); setCustomThemeName(null); }}
+                                                        className={`flex flex-col items-center gap-2 p-3 rounded-[var(--radius-md)] transition-all ${theme === t.id
+                                                            ? "ring-2 ring-[var(--accent)] bg-[var(--bg-hover)]"
+                                                            : "hover:bg-[var(--bg-hover)]"
+                                                            }`}
+                                                        title={t.name}
+                                                    >
+                                                        <div className="w-12 h-12 rounded-[var(--radius-md)] overflow-hidden border border-[var(--border)] flex items-center justify-center" style={{ backgroundColor: t.colors[0] }}>
+                                                            <div className="w-1/2 h-full" style={{ backgroundColor: t.colors[0] }}></div>
+                                                            <div className="w-1/2 h-full" style={{ backgroundColor: t.colors[1] }}></div>
+                                                        </div>
+                                                        <span className="text-[11px] text-[var(--text-primary)]">{t.name}</span>
+                                                    </button>
+                                                ))}
+                                                <button
+                                                    onClick={() => setTheme('custom')}
+                                                    className={`flex flex-col items-center gap-2 p-3 rounded-[var(--radius-md)] transition-all border border-dashed ${theme === 'custom'
+                                                        ? "ring-2 ring-[var(--accent)] bg-[var(--bg-hover)]"
+                                                        : "hover:bg-[var(--bg-hover)]"
+                                                        }`}
+                                                >
+                                                    <span className="material-symbols-outlined text-[24px] text-[var(--text-secondary)]">add_circle</span>
+                                                    <span className="text-[11px] text-[var(--text-primary)]">Custom</span>
+                                                </button>
+                                            </div>
+                                        </section>
+
+                                        {theme === 'custom' && (
+                                            <section>
+                                                <h3 className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-2">Custom Theme</h3>
+                                                <div className="flex flex-wrap gap-3">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => fileInputRef.current?.click()}
+                                                        className="btn-press px-4 py-2 text-sm rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                                                    >
+                                                        Import Theme
+                                                    </button>
+                                                    <input
+                                                        ref={fileInputRef}
+                                                        type="file"
+                                                        accept=".json"
+                                                        className="hidden"
+                                                        onChange={handleImportTheme}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={handleExportTheme}
+                                                        className="btn-press px-4 py-2 text-sm rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                                                    >
+                                                        Export Theme
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setShowManageThemes(true)}
+                                                        className="btn-press px-4 py-2 text-sm rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                                                    >
+                                                        Manage Themes
+                                                    </button>
+                                                </div>
+                                                {importError && (
+                                                    <p className="mt-2 text-[11px] text-[var(--danger)]">{importError}</p>
+                                                )}
+                                            </section>
+                                        )}
+                                    </>
+                                ) : (
+                                    <section>
+                                        <div className="flex items-center gap-2 mb-4">
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowManageThemes(false)}
+                                                className="w-7 h-7 rounded-[var(--radius-sm)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center justify-center transition-colors"
+                                            >
+                                                <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+                                            </button>
+                                            <h3 className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider">Manage Custom Themes</h3>
+                                        </div>
+                                        {customThemes.length === 0 ? (
+                                            <p className="text-sm text-[var(--text-muted)]">No custom themes saved.</p>
+                                        ) : (
+                                            <div className="space-y-2">
+                                                {customThemes.map((ct) => (
+                                                    <div
+                                                        key={ct.id}
+                                                        className={`flex items-center justify-between p-3 rounded-[var(--radius-md)] border transition-all ${customThemeName === ct.id
+                                                            ? "border-[var(--accent)] bg-[var(--bg-hover)]"
+                                                            : "border-[var(--border)]"
+                                                            }`}
+                                                    >
+                                                        <div className="flex items-center gap-3">
+                                                            <div
+                                                                className="w-8 h-8 rounded-[var(--radius-sm)] border border-[var(--border)]"
+                                                                style={{ backgroundColor: ct.colors['bg-primary'] || '#141414' }}
+                                                            />
+                                                            <span className="text-sm text-[var(--text-primary)]">{ct.name}</span>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleSelectTheme(ct.id)}
+                                                                className={`px-2 py-1 text-xs rounded-[var(--radius-sm)] transition-colors ${customThemeName === ct.id
+                                                                    ? "bg-[var(--accent)] text-[var(--accent-text)]"
+                                                                    : "border border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                                                                    }`}
+                                                            >
+                                                                {customThemeName === ct.id ? 'Active' : 'Select'}
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleDeleteTheme(ct.id)}
+                                                                className="px-2 py-1 text-xs rounded-[var(--radius-sm)] border border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors"
+                                                            >
+                                                                Delete
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </section>
+                                )}
+                            </>
+                        )}
+
+                        {section === "wiki" && (
+                            <>
+                                <section>
+                                    <h3 className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-2">Wiki Knowledge Base</h3>
+                                    <p className="text-sm text-[var(--text-secondary)] mb-4">
+                                        Configure a folder to be indexed as a searchable knowledge base. The wiki can be queried from the AI panel in "wiki" mode.
+                                    </p>
+                                    <div className="space-y-4">
+                                        <div>
+                                            <label className="block">
+                                                <span className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider">Wiki Folder</span>
+                                                <div className="flex gap-2 mt-1">
+                                                    <input
+                                                        type="text"
+                                                        value={wikiFolderPath}
+                                                        onChange={(e) => setWikiFolderPathLocal(e.target.value)}
+                                                        placeholder="Select a folder containing markdown files"
+                                                        className="flex-1 px-3 py-2 text-sm bg-[var(--bg-input)] border border-[var(--border)] rounded-[var(--radius-md)] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                                                        readOnly
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={pickWikiFolder}
+                                                        className="px-4 py-2 text-sm rounded-[var(--radius-md)] border border-[var(--border)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                                                    >
+                                                        Browse
+                                                    </button>
+                                                </div>
+                                            </label>
+                                        </div>
+                                        <div>
+                                            <label className="block">
+                                                <span className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider">Embeddings Model</span>
+                                                <input
+                                                    type="text"
+                                                    value={wikiModel}
+                                                    onChange={(e) => setWikiModelLocal(e.target.value)}
+                                                    placeholder="nomic-embed-text, mxbai-embed-large, ..."
+                                                    className="mt-1 w-full px-3 py-2 text-sm bg-[var(--bg-input)] border border-[var(--border)] rounded-[var(--radius-md)] text-[var(--text-primary)] outline-none focus:border-[var(--accent)] font-mono"
+                                                />
+                                                <span className="block mt-1 text-[11px] text-[var(--text-muted)]">Model for generating text embeddings (local Ollama models recommended)</span>
+                                            </label>
+                                        </div>
+                                        <div>
+                                            <label className="block">
+                                                <span className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider">Re-index Interval (minutes, 0 = manual only)</span>
+                                                <input
+                                                    type="number"
+                                                    value={wikiSchedule}
+                                                    onChange={(e) => setWikiScheduleLocal(parseInt(e.target.value) || 0)}
+                                                    min="0"
+                                                    max="1440"
+                                                    className="mt-1 w-32 px-3 py-2 text-sm bg-[var(--bg-input)] border border-[var(--border)] rounded-[var(--radius-md)] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                                                />
+                                            </label>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={saveWikiConfig}
+                                                className="px-4 py-2 text-sm rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--accent-text)] hover:opacity-90 transition-colors"
+                                            >
+                                                Save Configuration
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={clearWiki}
+                                                className="px-4 py-2 text-sm rounded-[var(--radius-md)] border border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--danger)]/10 transition-colors"
+                                            >
+                                                Clear Wiki
+                                            </button>
+                                        </div>
+                                        {wikiError && (
+                                            <p className="text-[11px] text-[var(--danger)]">{wikiError}</p>
+                                        )}
+                                    </div>
+                                </section>
+                                <section>
+                                    <h3 className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-2">How It Works</h3>
+                                    <div className="text-sm text-[var(--text-secondary)] space-y-2">
+                                        <p>1. Select a folder containing markdown files (.md, .markdown)</p>
+                                        <p>2. Choose an embeddings model for semantic search</p>
+                                        <p>3. Set a re-index interval (or index manually)</p>
+                                        <p>4. Open the AI panel and switch to "wiki" mode to search your knowledge base</p>
+                                    </div>
+                                </section>
                             </>
                         )}
 

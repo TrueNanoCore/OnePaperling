@@ -1,0 +1,32 @@
+{
+  "name": "kraftwerk-glass-themes",
+  "displayName": "Kraftwerk Glass Themes",
+  "description": "Kraftwerk Glass Emerald, Sapphire and Ruby themes inspired by Supaglass with visible borders.",
+  "version": "0.0.1",
+  "publisher": "local-lab",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Themes"
+  ],
+  "contributes": {
+    "themes": [
+      {
+        "label": "Kraftwerk Glass Emerald",
+        "uiTheme": "vs-dark",
+        "path": "./themes/kraftwerk-glass-emerald-color-theme.json"
+      },
+      {
+        "label": "Kraftwerk Glass Sapphire",
+        "uiTheme": "vs-dark",
+        "path": "./themes/kraftwerk-glass-sapphire-color-theme.json"
+      },
+      {
+        "label": "Kraftwerk Glass Ruby",
+        "uiTheme": "vs-dark",
+        "path": "./themes/kraftwerk-glass-ruby-color-theme.json"
+      }
+    ]
+  }
+}
